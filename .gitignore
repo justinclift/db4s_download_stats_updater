@@ -1,3 +1,4 @@
 .idea
 Geo-IP.sqlite
 config.toml
+db4s_download_stats_updater
