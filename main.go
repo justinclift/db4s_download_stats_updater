@@ -142,24 +142,34 @@ func main() {
 	}()
 
 	// Select all download rows with a stored IPv4 address and a NULL country code field
-	var rows *pgx.Rows
+
 	// TODO: Don't use hard coded time range here
+	startTime := time.Date(2019, time.April, 15, 0, 2, 0, 0, time.UTC)
+	endTime := time.Date(2019, time.April, 15, 0, 12, 0, 0, time.UTC)
+
+	// Debugging info
+	if debug {
+		fmt.Printf("Processing range '%v' - '%v'\n", startTime.Format(time.RFC822), endTime.Format(time.RFC822))
+	}
+
+	var rows *pgx.Rows
 	dbQuery := `
-		SELECT download_id, client_ipv4
+		SELECT download_id, request_time, client_ipv4
 		FROM download_log
 		WHERE client_ipv4 IS NOT NULL
 			AND client_country IS NULL
-			AND request_time > '2019-04-21 23:20'::timestamp
-    		AND request_time < '2019-04-22'::timestamp`
-	rows, err = tx.Query(dbQuery)
+			AND request_time > $1
+			AND request_time < $2`
+	rows, err = tx.Query(dbQuery, startTime, endTime)
 	if err != nil {
 		log.Printf("Retrieving unprocessed IPv4 addresses failed: %v\n", err)
 		return // This will automatically call the transaction rollback code
 	}
 	var countryCode, ipAddress string
+	var reqTime time.Time
 	var downloadID int64
 	for rows.Next() {
-		err = rows.Scan(&downloadID, &ipAddress)
+		err = rows.Scan(&downloadID, &reqTime, &ipAddress)
 		if err != nil {
 			log.Printf("Error retrieving unprocessed IPv4 address: %v\n", err)
 			rows.Close()
@@ -175,8 +185,8 @@ func main() {
 
 		// Debugging info
 		if debug {
-			log.Printf("Processing download id '%d' : IPv4: '%s' : Country code: '%s'\n", downloadID,
-				ipAddress, countryCode)
+			log.Printf("Processing request #%d dated '%v' : IPv4: '%s' : Country code: '%s'\n",
+				downloadID, reqTime.Format(time.RFC822), ipAddress, countryCode)
 		}
 
 		// * Update the download row with the country code information *
