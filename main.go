@@ -47,6 +47,10 @@ var (
 	// SQLite pieces
 	sdb  *sqlite.Conn
 	stmt *sqlite.Stmt
+
+	// The starting point in time for entries to be processed, and the length of time to cover
+	startTime = time.Date(2019, time.April, 15, 8, 0, 0, 0, time.UTC)
+	timePeriod = time.Hour * 1
 )
 
 func main() {
@@ -127,14 +131,11 @@ func main() {
 		fmt.Printf("Connected to PostgreSQL server: %v\n", Conf.Pg.Server)
 	}
 
-	// TODO: Run several of these in parallel
-	startTime := time.Date(2019, time.April, 15, 6, 0, 0, 0, time.UTC)
-	endTime := time.Date(2019, time.April, 15, 7, 0, 0, 0, time.UTC)
-	err = processRange(startTime, endTime)
+	// Process entries from the given starting point
+	err = processRange(startTime)
 	if err != nil {
 		log.Print(err)
 	}
-
 }
 
 // Returns the 3 letter country code associated with a given IPv4 address
@@ -174,7 +175,10 @@ func countryLookupIPv4(ipAddress string) (country string, err error) {
 }
 
 // This function does the actual work of querying the PG database and updating rows with the country code
-func processRange(startTime time.Time, endTime time.Time) (err error) {
+func processRange(startTime time.Time) (err error) {
+	// Determine the end processing time
+	endTime := startTime.Add(timePeriod)
+
 	// Begin PostgreSQL transaction
 	tx, err := pg.Begin()
 	if err != nil {
