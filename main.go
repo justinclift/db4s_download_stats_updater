@@ -124,9 +124,57 @@ func main() {
 
 	// Log successful connection
 	if debug {
-		fmt.Printf("Connected to PostgreSQL server: %v:%v\n", Conf.Pg.Server, uint16(Conf.Pg.Port))
+		fmt.Printf("Connected to PostgreSQL server: %v\n", Conf.Pg.Server)
 	}
 
+	// TODO: Run several of these in parallel
+	startTime := time.Date(2019, time.April, 15, 6, 0, 0, 0, time.UTC)
+	endTime := time.Date(2019, time.April, 15, 7, 0, 0, 0, time.UTC)
+	err = processRange(startTime, endTime)
+	if err != nil {
+		log.Print(err)
+	}
+
+}
+
+// Returns the 3 letter country code associated with a given IPv4 address
+func countryLookupIPv4(ipAddress string) (country string, err error) {
+	// Break the IPv4 address into octets
+	var part1, part2, part3, part4 int
+	ip := strings.Split(ipAddress, ".")
+	if len(ip) != 4 {
+		log.Fatalf("Unknown IPv4 address string format")
+	}
+	part1, err = strconv.Atoi(ip[0])
+	if err != nil {
+		log.Fatal(err)
+	}
+	part2, err = strconv.Atoi(ip[1])
+	if err != nil {
+		log.Fatal(err)
+	}
+	part3, err = strconv.Atoi(ip[2])
+	if err != nil {
+		log.Fatal(err)
+	}
+	part4, err = strconv.Atoi(ip[3])
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Convert the IP address pieces to the correct lookup value
+	ipVal := part4 + (part3 * 256) + (part2 * 256 * 256) + (part1 * 256 * 256 * 256)
+
+	// Look up the country code for the IP address
+	err = stmt.Select(func(s *sqlite.Stmt) (innerErr error) {
+		innerErr = s.Scan(&country)
+		return
+	}, ipVal, ipVal)
+	return
+}
+
+// This function does the actual work of querying the PG database and updating rows with the country code
+func processRange(startTime time.Time, endTime time.Time) (err error) {
 	// Begin PostgreSQL transaction
 	tx, err := pg.Begin()
 	if err != nil {
@@ -142,10 +190,6 @@ func main() {
 	}()
 
 	// Select all download rows with a stored IPv4 address and a NULL country code field
-
-	// TODO: Don't use hard coded time range here
-	startTime := time.Date(2019, time.April, 15, 3, 0, 0, 0, time.UTC)
-	endTime := time.Date(2019, time.April, 15, 5, 0, 0, 0, time.UTC)
 
 	// Debugging info
 	if debug {
@@ -193,23 +237,25 @@ func main() {
 		// * Update the download row with the country code information *
 
 		// Begin nested PostgreSQL transaction
-		tx2, err := pg.Begin()
+		var tx2 *pgx.Tx
+		tx2, err = pg.Begin()
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		// Save the updated list for the user back to PG
+		var commandTag pgx.CommandTag
 		dbQuery = `
 				UPDATE download_log
 				SET client_country = $2
 				WHERE download_id = $1`
-		commandTag, err := tx2.Exec(dbQuery, downloadID, countryCode)
+		commandTag, err = tx2.Exec(dbQuery, downloadID, countryCode)
 		if err != nil {
 			log.Printf("Updating download ID '%d' with country code '%s' failed: %v", downloadID, countryCode,
 				err)
-			err = tx2.Rollback()
-			if err != nil {
-				log.Print(err)
+			err2 := tx2.Rollback()
+			if err2 != nil {
+				log.Print(err2)
 			}
 			return // This will automatically call the outer transaction rollback code
 		}
@@ -237,40 +283,6 @@ func main() {
 		fmt.Printf("Country codes updated for '%v' - '%v'\n", startTime.UTC().Format(time.RFC822),
 			endTime.UTC().Format(time.RFC822))
 	}
-}
 
-// Returns the 3 letter country code associated with a given IPv4 address
-func countryLookupIPv4(ipAddress string) (country string, err error) {
-	// Break the IPv4 address into octets
-	var part1, part2, part3, part4 int
-	ip := strings.Split(ipAddress, ".")
-	if len(ip) != 4 {
-		log.Fatalf("Unknown IPv4 address string format")
-	}
-	part1, err = strconv.Atoi(ip[0])
-	if err != nil {
-		log.Fatal(err)
-	}
-	part2, err = strconv.Atoi(ip[1])
-	if err != nil {
-		log.Fatal(err)
-	}
-	part3, err = strconv.Atoi(ip[2])
-	if err != nil {
-		log.Fatal(err)
-	}
-	part4, err = strconv.Atoi(ip[3])
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Convert the IP address pieces to the correct lookup value
-	ipVal := part4 + (part3 * 256) + (part2 * 256 * 256) + (part1 * 256 * 256 * 256)
-
-	// Look up the country code for the IP address
-	err = stmt.Select(func(s *sqlite.Stmt) (innerErr error) {
-		innerErr = s.Scan(&country)
-		return
-	}, ipVal, ipVal)
 	return
 }
