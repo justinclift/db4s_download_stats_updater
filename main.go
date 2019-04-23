@@ -144,12 +144,13 @@ func main() {
 	// Select all download rows with a stored IPv4 address and a NULL country code field
 
 	// TODO: Don't use hard coded time range here
-	startTime := time.Date(2019, time.April, 15, 0, 2, 0, 0, time.UTC)
-	endTime := time.Date(2019, time.April, 15, 0, 12, 0, 0, time.UTC)
+	startTime := time.Date(2019, time.April, 15, 3, 0, 0, 0, time.UTC)
+	endTime := time.Date(2019, time.April, 15, 5, 0, 0, 0, time.UTC)
 
 	// Debugging info
 	if debug {
-		fmt.Printf("Processing range '%v' - '%v'\n", startTime.Format(time.RFC822), endTime.Format(time.RFC822))
+		fmt.Printf("Processing range '%v' - '%v'\n", startTime.UTC().Format(time.RFC822),
+			endTime.UTC().Format(time.RFC822))
 	}
 
 	var rows *pgx.Rows
@@ -186,7 +187,7 @@ func main() {
 		// Debugging info
 		if debug {
 			log.Printf("Processing request #%d dated '%v' : IPv4: '%s' : Country code: '%s'\n",
-				downloadID, reqTime.Format(time.RFC822), ipAddress, countryCode)
+				downloadID, reqTime.UTC().Format(time.RFC822), ipAddress, countryCode)
 		}
 
 		// * Update the download row with the country code information *
