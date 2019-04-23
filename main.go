@@ -232,8 +232,10 @@ func main() {
 	// This seems to commit the outer transaction, so no need to do it explicitly
 	rows.Close()
 
+	// Debugging info
 	if debug {
-		fmt.Println("Country codes updated")
+		fmt.Printf("Country codes updated for '%v' - '%v'\n", startTime.UTC().Format(time.RFC822),
+			endTime.UTC().Format(time.RFC822))
 	}
 }
 
