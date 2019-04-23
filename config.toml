@@ -1,0 +1,9 @@
+[geo]
+Path = "Geo-IP.sqlite"
+
+[pg]
+database = "some_database"
+num_connections = 10
+server = "server_name"
+ssl = boolean
+username = "some_user"
