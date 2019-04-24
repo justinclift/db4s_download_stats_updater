@@ -38,6 +38,10 @@ var (
 
 	// PostgreSQL Connection pool
 	pg *pgx.ConnPool
+
+	// The starting point in time for entries to be processed, and the length of time to cover
+	startTime  = time.Date(2019, time.April, 1, 0, 0, 0, 0, time.UTC)
+	timePeriod = time.Hour * 24 * 31
 )
 
 func main() {
@@ -85,7 +89,7 @@ func main() {
 	}
 
 	// Process entries from the given starting point
-	err = processRange()
+	err = processRange(startTime)
 	if err != nil {
 		log.Print(err)
 	}
@@ -128,13 +132,15 @@ func countryLookupIPv4(ipAddress string) (country string) {
 	err = pg.QueryRow(dbQuery, ipVal, ipVal).Scan(&country)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Looking up the country code for '%s' failed: %v\n", ipAddress, err)
-		return
 	}
 	return
 }
 
 // This function does the actual work of querying the PG database and updating rows with the country code
-func processRange() (err error) {
+func processRange(startTime time.Time) (err error) {
+	// Determine the end processing time
+	endTime := startTime.Add(timePeriod)
+
 	// Begin PostgreSQL transaction
 	tx, err := pg.Begin()
 	if err != nil {
@@ -151,18 +157,18 @@ func processRange() (err error) {
 
 	// Select all download rows with a stored IPv4 address and a NULL country code field
 
-	// Debugging info
-	if debug {
-		fmt.Println("Processing all rows...")
-	}
+	// Display the date range being processed
+	fmt.Printf("Processing range '%v' - '%v'\n", startTime.UTC().Format(time.RFC822), endTime.UTC().Format(time.RFC822))
 
 	var rows *pgx.Rows
 	dbQuery := `
 		SELECT download_id, request_time, client_ipv4
 		FROM download_log
 		WHERE client_ipv4 IS NOT NULL
-			AND client_country IS NULL`
-	rows, err = tx.Query(dbQuery)
+			AND client_country IS NULL
+			AND request_time > $1
+			AND request_time < $2`
+	rows, err = tx.Query(dbQuery, startTime, endTime)
 	if err != nil {
 		log.Printf("Retrieving unprocessed IPv4 addresses failed: %v\n", err)
 		return // This will automatically call the transaction rollback code
@@ -232,9 +238,7 @@ func processRange() (err error) {
 	// This seems to commit the outer transaction, so no need to do it explicitly
 	rows.Close()
 
-	// Debugging info
-	if debug {
-		fmt.Println("Country codes updated")
-	}
+	// Display completion message
+	fmt.Printf("Country codes updated for '%v' - '%v'\n", startTime.UTC().Format(time.RFC822),  endTime.UTC().Format(time.RFC822))
 	return
 }
