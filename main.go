@@ -11,18 +11,13 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	sqlite "github.com/gwenn/gosqlite"
 	"github.com/jackc/pgx"
 	"github.com/mitchellh/go-homedir"
 )
 
 // Configuration file
 type TomlConfig struct {
-	Geo GeoInfo
-	Pg  PGInfo
-}
-type GeoInfo struct {
-	Path string // Path to the Geo-IP.sqlite file
+	Pg PGInfo
 }
 type PGInfo struct {
 	Database       string
@@ -44,13 +39,9 @@ var (
 	// PostgreSQL Connection pool
 	pg *pgx.ConnPool
 
-	// SQLite pieces
-	sdb  *sqlite.Conn
-	stmt *sqlite.Stmt
-
 	// The starting point in time for entries to be processed, and the length of time to cover
-	startTime = time.Date(2019, time.April, 15, 8, 0, 0, 0, time.UTC)
-	timePeriod = time.Hour * 1
+	startTime  = time.Date(2019, time.January, 20, 0, 0, 0, 0, time.UTC)
+	timePeriod = time.Minute * 10
 )
 
 func main() {
@@ -62,47 +53,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("User home directory couldn't be determined: %s", "\n")
 		}
-		configFile = filepath.Join(userHome, ".db4s", "downloader_config.toml")
+		configFile = filepath.Join(userHome, ".db4s", "status_updater.toml")
 	}
 
 	// Read our configuration settings
 	if _, err = toml.DecodeFile(configFile, &Conf); err != nil {
 		log.Fatal(err)
 	}
-
-	// Open the Geo-IP database, for country lookups
-	sdb, err = sqlite.Open(Conf.Geo.Path)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() {
-		err = sdb.Close()
-		if err != nil {
-			log.Println(err)
-		}
-	}()
-
-	// Log successful connection
-	if debug {
-		fmt.Printf("Connected to Geo-IP database: %v\n", Conf.Geo.Path)
-	}
-
-	// Create the SQLite prepared statement for IP address to country code lookups
-	prepQuery := `
-		SELECT cntry
-		FROM ipv4
-		WHERE ipfrom < ?
-			AND ipto > ?`
-	stmt, err = sdb.Prepare(prepQuery)
-	if err != nil {
-		log.Fatalf("Error when preparing statement for database: %s\n", err)
-	}
-	defer func() {
-		err = stmt.Finalize()
-		if err != nil {
-			log.Println(err)
-		}
-	}()
 
 	// Setup the PostgreSQL config
 	pgConfig := new(pgx.ConnConfig)
@@ -167,10 +124,16 @@ func countryLookupIPv4(ipAddress string) (country string, err error) {
 	ipVal := part4 + (part3 * 256) + (part2 * 256 * 256) + (part1 * 256 * 256 * 256)
 
 	// Look up the country code for the IP address
-	err = stmt.Select(func(s *sqlite.Stmt) (innerErr error) {
-		innerErr = s.Scan(&country)
+	dbQuery := `
+		SELECT cntry
+		FROM country_code_lookups
+		WHERE ipfrom < $1
+			AND ipto > $2`
+	err = pg.QueryRow(dbQuery, ipVal, ipVal).Scan(&country)
+	if err != nil {
+		log.Printf("Looking up a country code failed: %v\n", err)
 		return
-	}, ipVal, ipVal)
+	}
 	return
 }
 
@@ -287,6 +250,5 @@ func processRange(startTime time.Time) (err error) {
 		fmt.Printf("Country codes updated for '%v' - '%v'\n", startTime.UTC().Format(time.RFC822),
 			endTime.UTC().Format(time.RFC822))
 	}
-
 	return
 }
