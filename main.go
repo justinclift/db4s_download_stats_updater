@@ -34,14 +34,10 @@ var (
 	Conf TomlConfig
 
 	// Display debugging messages?
-	debug = true
+	debug = false
 
 	// PostgreSQL Connection pool
 	pg *pgx.ConnPool
-
-	// The starting point in time for entries to be processed, and the length of time to cover
-	startTime  = time.Date(2019, time.January, 20, 0, 0, 0, 0, time.UTC)
-	timePeriod = time.Minute * 10
 )
 
 func main() {
@@ -89,21 +85,21 @@ func main() {
 	}
 
 	// Process entries from the given starting point
-	err = processRange(startTime)
+	err = processRange()
 	if err != nil {
 		log.Print(err)
 	}
 }
 
 // Returns the 3 letter country code associated with a given IPv4 address
-func countryLookupIPv4(ipAddress string) (country string, err error) {
+func countryLookupIPv4(ipAddress string) (country string) {
 	// Break the IPv4 address into octets
 	var part1, part2, part3, part4 int
 	ip := strings.Split(ipAddress, ".")
 	if len(ip) != 4 {
 		log.Fatalf("Unknown IPv4 address string format")
 	}
-	part1, err = strconv.Atoi(ip[0])
+	part1, err := strconv.Atoi(ip[0])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -131,17 +127,14 @@ func countryLookupIPv4(ipAddress string) (country string, err error) {
 			AND ipto > $2`
 	err = pg.QueryRow(dbQuery, ipVal, ipVal).Scan(&country)
 	if err != nil {
-		log.Printf("Looking up a country code failed: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Looking up the country code for '%s' failed: %v\n", ipAddress, err)
 		return
 	}
 	return
 }
 
 // This function does the actual work of querying the PG database and updating rows with the country code
-func processRange(startTime time.Time) (err error) {
-	// Determine the end processing time
-	endTime := startTime.Add(timePeriod)
-
+func processRange() (err error) {
 	// Begin PostgreSQL transaction
 	tx, err := pg.Begin()
 	if err != nil {
@@ -160,8 +153,7 @@ func processRange(startTime time.Time) (err error) {
 
 	// Debugging info
 	if debug {
-		fmt.Printf("Processing range '%v' - '%v'\n", startTime.UTC().Format(time.RFC822),
-			endTime.UTC().Format(time.RFC822))
+		fmt.Println("Processing all rows...")
 	}
 
 	var rows *pgx.Rows
@@ -169,10 +161,8 @@ func processRange(startTime time.Time) (err error) {
 		SELECT download_id, request_time, client_ipv4
 		FROM download_log
 		WHERE client_ipv4 IS NOT NULL
-			AND client_country IS NULL
-			AND request_time > $1
-			AND request_time < $2`
-	rows, err = tx.Query(dbQuery, startTime, endTime)
+			AND client_country IS NULL`
+	rows, err = tx.Query(dbQuery)
 	if err != nil {
 		log.Printf("Retrieving unprocessed IPv4 addresses failed: %v\n", err)
 		return // This will automatically call the transaction rollback code
@@ -189,57 +179,54 @@ func processRange(startTime time.Time) (err error) {
 		}
 
 		// Do the country code lookup for the IPv4 address
-		countryCode, err = countryLookupIPv4(ipAddress)
-		if err != nil {
-			log.Print(err)
-			return // This will automatically call the transaction rollback code
-		}
+		countryCode = countryLookupIPv4(ipAddress)
+		if countryCode != "" {
+			// Debugging info
+			if debug {
+				log.Printf("Processing request #%d dated '%v' : IPv4: '%s' : Country code: '%s'\n",
+					downloadID, reqTime.UTC().Format(time.RFC822), ipAddress, countryCode)
+			}
 
-		// Debugging info
-		if debug {
-			log.Printf("Processing request #%d dated '%v' : IPv4: '%s' : Country code: '%s'\n",
-				downloadID, reqTime.UTC().Format(time.RFC822), ipAddress, countryCode)
-		}
+			// * Update the download row with the country code information *
 
-		// * Update the download row with the country code information *
+			// Begin nested PostgreSQL transaction
+			var tx2 *pgx.Tx
+			tx2, err = pg.Begin()
+			if err != nil {
+				log.Fatal(err)
+			}
 
-		// Begin nested PostgreSQL transaction
-		var tx2 *pgx.Tx
-		tx2, err = pg.Begin()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		// Save the updated list for the user back to PG
-		var commandTag pgx.CommandTag
-		dbQuery = `
+			// Save the updated list for the user back to PG
+			var commandTag pgx.CommandTag
+			dbQuery = `
 				UPDATE download_log
 				SET client_country = $2
 				WHERE download_id = $1`
-		commandTag, err = tx2.Exec(dbQuery, downloadID, countryCode)
-		if err != nil {
-			log.Printf("Updating download ID '%d' with country code '%s' failed: %v", downloadID, countryCode,
-				err)
-			err2 := tx2.Rollback()
-			if err2 != nil {
-				log.Print(err2)
-			}
-			return // This will automatically call the outer transaction rollback code
-		}
-		if numRows := commandTag.RowsAffected(); numRows != 1 {
-			log.Printf("Wrong number of rows affected (%v) when updating download ID '%d' with country code "+
-				"'%s'", numRows, downloadID, countryCode)
-			err = tx2.Rollback()
+			commandTag, err = tx2.Exec(dbQuery, downloadID, countryCode)
 			if err != nil {
-				log.Print(err)
+				log.Printf("Updating download ID '%d' with country code '%s' failed: %v", downloadID, countryCode,
+					err)
+				err2 := tx2.Rollback()
+				if err2 != nil {
+					log.Print(err2)
+				}
+				return // This will automatically call the outer transaction rollback code
 			}
-			return // This will automatically call the outer transaction rollback code
-		}
+			if numRows := commandTag.RowsAffected(); numRows != 1 {
+				log.Printf("Wrong number of rows affected (%v) when updating download ID '%d' with country code "+
+					"'%s'", numRows, downloadID, countryCode)
+				err = tx2.Rollback()
+				if err != nil {
+					log.Print(err)
+				}
+				return // This will automatically call the outer transaction rollback code
+			}
 
-		// Commit nested PostgreSQL transaction
-		err = tx2.Commit()
-		if err != nil {
-			log.Fatal(err)
+			// Commit nested PostgreSQL transaction
+			err = tx2.Commit()
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
 	}
 	// This seems to commit the outer transaction, so no need to do it explicitly
@@ -247,8 +234,7 @@ func processRange(startTime time.Time) (err error) {
 
 	// Debugging info
 	if debug {
-		fmt.Printf("Country codes updated for '%v' - '%v'\n", startTime.UTC().Format(time.RFC822),
-			endTime.UTC().Format(time.RFC822))
+		fmt.Println("Country codes updated")
 	}
 	return
 }
